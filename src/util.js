@@ -40,6 +40,17 @@ export function createRing(limit = 500) {
  */
 export const VALID_EFFORTS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
+/** 宿主模型选择器上显示的档位名；缺失时调用方回落成 id 本身。 */
+export const EFFORT_LABELS = {
+  off: 'Off',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+  max: 'Max',
+}
+
 export function sanitizeEfforts(raw, defaultRaw) {
   if (!Array.isArray(raw)) return undefined
   const seen = new Set()
@@ -52,8 +63,23 @@ export function sanitizeEfforts(raw, defaultRaw) {
   }
   if (efforts.length === 0) return undefined
   const fallback = typeof defaultRaw === 'string' ? defaultRaw.trim().toLowerCase() : ''
+  // 上游给的 default 不在清洗结果里时退回「最后一个档位」：宿主只接受集合内的
+  // 值，给 undefined 会让选择器丢默认项；这里保证返回值一定可兑现。
   const defaultEffort = seen.has(fallback) ? fallback : efforts[efforts.length - 1]
   return { efforts, defaultEffort }
+}
+
+/**
+ * 宿主契约 `LlmModelReasoningInfo`：`efforts` 必须是 `{ id, name }` 对象数组。
+ * 传字符串数组时宿主映射成 `{id: undefined, name: undefined}`，整份模型目录过不了
+ * zod，**整个模型选择器**一起挂（2026-11-10 实测）。所有出口的 reason 都走这里。
+ */
+export function toReasoningInfo(clean) {
+  if (!clean || !Array.isArray(clean.efforts) || clean.efforts.length === 0) return undefined
+  return {
+    efforts: clean.efforts.map(id => ({ id, name: EFFORT_LABELS[id] ?? id })),
+    ...(clean.defaultEffort === undefined ? {} : { defaultEffort: clean.defaultEffort }),
+  }
 }
 
 /** 有限正整数兜底（上下文窗口 / 输出上限这类元数据字段）。 */

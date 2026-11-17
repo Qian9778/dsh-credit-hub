@@ -13,7 +13,7 @@
  */
 
 import { UpstreamError, CODE } from './http.js'
-import { now, sanitizeEfforts, finiteOr } from './util.js'
+import { now, sanitizeEfforts, toReasoningInfo, finiteOr } from './util.js'
 
 export const ROUTE_MAIN = 'credit-hub'
 
@@ -267,11 +267,16 @@ export function createHubRuntime({ stores, workbuddy, upstreams, packBridge, pac
       const entry = rows.find(row => row.id === model)
       // 未知模型 fail-fast：装作解析成功只会把错误推迟到上游请求之后
       if (!entry) throw new UpstreamError(`credit-hub 没有模型 "${model}"`, CODE.notFound)
-      // 宿主校验一票否决整条 provider——所有来源的档位/数值都在出口再消毒一次。
-      // 注意形状：LlmModelReasoningInfo.efforts 是 [{id, name}, ...] 对象数组，
-      // 不是字符串数组；返回字符串数组会被宿主判为 INVALID_MODEL_REASONING，
-      // 整个分组从模型选择器消失（2026-11-10 实测报错）。
-      const reasoning = sanitizeEfforts(entry.efforts, entry.defaultEffort)
+      // 宿主契约（LlmModelReasoningInfo）：efforts 是 {id,name} 对象数组，字符串数组
+      // 会让整份模型目录过不了 zod（LlmModelReasoningInfo 校验一票否决整条 provider）。
+      // 元数据异常降级成「无档位菜单」，不抛给宿主的批量 Promise.all。
+      let reasoning
+      try {
+        reasoning = toReasoningInfo(sanitizeEfforts(entry.efforts, entry.defaultEffort))
+      } catch (error) {
+        warn?.(`credit-hub: 模型 ${entry.id} 思考档位元数据异常，已降级为无档位菜单（${error?.message ?? error}）`)
+        reasoning = undefined
+      }
       return {
         provider,
         id: entry.id,
@@ -279,12 +284,7 @@ export function createHubRuntime({ stores, workbuddy, upstreams, packBridge, pac
         inputModalities: entry.vision === true ? ['text', 'image'] : ['text'],
         context: { contextWindow: finiteOr(entry.contextWindow, 128000) },
         defaultMaxTokens: Math.min(finiteOr(entry.maxOutput, 16384), 32768),
-        ...(reasoning !== undefined ? {
-          reasoning: {
-            efforts: reasoning.efforts.map(effort => ({ id: effort, name: effort })),
-            defaultEffort: reasoning.defaultEffort,
-          },
-        } : {}),
+        ...(reasoning !== undefined ? { reasoning } : {}),
       }
     },
 

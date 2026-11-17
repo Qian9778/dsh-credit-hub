@@ -46,16 +46,24 @@ export function createNormalizer(wire, emit) {
     nextIndex: state.nextIndex,
   })
 
-  const openBlock = kind => {
+  // 每个块只挂在一个 key 下。旧写法固定注册 `#index`，tool-call 分支又拿
+  // `call:<index>` 存一次同一引用 —— closeAll 遍历时一块被关两遍，客户端就
+  // 收到重复的 tool_call 帧（实测上游 9 个分片 → 客户端 2 个完整调用）。
+  const openBlock = (kind, key) => {
     const index = state.nextIndex++
-    state.open.set(`#${index}`, { index, kind, text: '', args: '', id: kind === 'tool-call' ? mintId('toolu') : '', name: '' })
+    const block = {
+      index, kind, text: '', args: '',
+      id: kind === 'tool-call' ? mintId('toolu') : '', name: '',
+      key: key ?? `#${index}`,
+    }
+    state.open.set(block.key, block)
     emit({ type: 'block-start', index, blockType: kind })
-    return state.open.get(`#${index}`)
+    return block
   }
 
   const closeBlock = block => {
     if (!block) return
-    state.open.delete(`#${block.index}`)
+    state.open.delete(block.key ?? `#${block.index}`)
     if (block.kind === 'text' && block.text !== '') {
       emit({ type: 'block-end', index: block.index, block: { type: 'text', text: block.text } })
     } else if (block.kind === 'reasoning' && block.text !== '') {
@@ -128,9 +136,8 @@ export function createNormalizer(wire, emit) {
         const key = `call:${call.index ?? call.id ?? blockKeyOf(call)}`
         let block = state.open.get(key)
         if (!block) {
-          block = openBlock('tool-call')
+          block = openBlock('tool-call', key)
           if (call.id) block.id = call.id
-          state.open.set(key, block)
         }
         const name = call.function?.name
         if (typeof name === 'string' && name) block.name = block.name ? block.name + name : name
@@ -158,13 +165,14 @@ export function createNormalizer(wire, emit) {
     if (event.type === 'content_block_start') {
       const kind = event.content_block?.type === 'thinking' ? 'reasoning'
         : event.content_block?.type === 'tool_use' ? 'tool-call' : 'text'
-      const block = openBlock(kind)
+      // 同一个坑：旧写法 openBlock 之后又 set(`cb:${index}`)，一块挂两个键；
+      // 现在直接把 cb:<index> 当唯一键传进去。
+      const block = openBlock(kind, `cb:${event.index}`)
       if (kind === 'tool-call') {
         state.sawToolCall = true
         if (event.content_block?.id) block.id = event.content_block.id
         if (event.content_block?.name) block.name = event.content_block.name
       }
-      state.open.set(`cb:${event.index}`, block)
       return
     }
     if (event.type === 'content_block_delta') {
